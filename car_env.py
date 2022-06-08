@@ -9,6 +9,7 @@ import cv2
 import math
 import gym
 import copy
+import random
 from keras.applications.xception import Xception, preprocess_input
 from keras import Sequential
 from keras.layers import GlobalAveragePooling2D
@@ -32,7 +33,7 @@ import carla
 STATE_SHAPE = (1,)
 IM_WIDTH = 640
 IM_HEIGHT = 480
-SECONDS_PER_EPISODE = 60
+SECONDS_PER_EPISODE = 15
 MAX_LAT = 1.2
 SHOW_PREVIEW  = False    ## for debugging purpose
 MIN_REWARD = -2
@@ -87,27 +88,32 @@ class CarEnv(gym.Env):
 
         # generate global path
         spawn_points = self.map.get_spawn_points()
-        # if random.randint(0, 1) == 0:
-        #     start = self.map.get_waypoint(carla.Location(19, y=-5)).transform.location
-        #     end = self.map.get_waypoint(carla.Location(19, y=5)).transform.location
-        # else:
-            # start = carla.Location(spawn_points[100].location)
-            # end = carla.Location(spawn_points[200].location)
+        choice = random.randint(0, 3)
+        if choice == 0:
+            start = self.map.get_waypoint(carla.Location(19, y=-5)).transform.location
+            end = self.map.get_waypoint(carla.Location(19, y=5)).transform.location
+        elif choice == 1:
+            start = carla.Location(spawn_points[100].location)
+            end = carla.Location(spawn_points[200].location)
+        elif choice == 2:
+            start = self.map.get_waypoint(carla.Location(6, y=-120)).transform.location
+            end = carla.Location(spawn_points[200].location)
+        elif choice == 3:
+            start = self.map.get_waypoint(carla.Location(27, y=-10)).transform.location
+            end = carla.Location(spawn_points[200].location)
 
-        # start = self.map.get_waypoint(carla.Location(27, y=-10)).transform.location
-        # end = carla.Location(spawn_points[200].location)
+        # start = self.map.get_waypoint(carla.Location(19, y=-5)).transform.location
+        # end = self.map.get_waypoint(carla.Location(19, y=5)).transform.location
 
-        start = carla.Location(spawn_points[100].location)
-        end = carla.Location(spawn_points[200].location)
-
-        self.waypoints = self.grp.trace_route(start, end)
+        self.waypoints = self.grp.trace_route(start, end)[:13]
         if len(self.waypoints) < 2:
             raise ValueError("number of generated waypoints are less than 2")
 
+
         if self.WAYPT_VISUALIZE:
-            for waypoint in self.waypoints:
+            for i, waypoint in enumerate(self.waypoints):
                 self.world.debug.draw_string(waypoint.transform.location, 'O', draw_shadow=False,
-                                        color=carla.Color(r=0, g=255, b=0), life_time=1000,
+                                        color=carla.Color(r=0, g=255, b=0) if i != 14 else carla.Color(r=255, g=0, b=0), life_time=1000,
                                         persistent_lines=True)
         # set distance calculator
         self.frenet.set_waypoints(self.waypoints)
@@ -211,6 +217,7 @@ class CarEnv(gym.Env):
         For now let's just pass steer left, straight, right
         0, 1, 2
         '''
+        
         if action == 0:
             self.vehicle.apply_control(carla.VehicleControl(throttle=0.15, steer=-0.7*self.STEER_AMT))
         elif action == 1:
@@ -268,24 +275,26 @@ class CarEnv(gym.Env):
             center_width = center_waypt.lane_width
             reward = center_width / 2 - abs(lat)
 
-            if lat > 0 and not right_waypt is None:
-                right_width = right_waypt.lane_width
-                turn_right = (center_waypt.lane_change == carla.LaneChange.Right) \
-                         or (center_waypt.lane_change == carla.LaneChange.Both)
+            # print("center: ", center_width)
 
-                if turn_right:
-                    reward = (center_width + right_width) / 2 - lat
+            # if lat > 0 and not right_waypt is None:
+            #     right_width = right_waypt.lane_width
+            #     turn_right = (center_waypt.lane_change == carla.LaneChange.Right) \
+            #              or (center_waypt.lane_change == carla.LaneChange.Both)
 
-            elif lat <= 0 and not left_waypt is None:
-                left_width = left_waypt.lane_width
-                turn_left  = (center_waypt.lane_change == carla.LaneChange.Left) \
-                         or (center_waypt.lane_change == carla.LaneChange.Both)
+            #     if turn_right:
+            #         reward = (center_width + right_width) / 2 - lat
 
-                if turn_left:
-                    reward = (center_width + left_width) / 2 + lat
+            # elif lat <= 0 and not left_waypt is None:
+            #     left_width = left_waypt.lane_width
+            #     turn_left  = (center_waypt.lane_change == carla.LaneChange.Left) \
+            #              or (center_waypt.lane_change == carla.LaneChange.Both)
+
+            #     if turn_left:
+            #         reward = (center_width + left_width) / 2 + lat
                 
 
-            if reward < MIN_REWARD:
+            if reward < 0:
                 done = True
             else:
                 # if reward > 0:
@@ -297,7 +306,11 @@ class CarEnv(gym.Env):
         
 
         if self.episode_start + SECONDS_PER_EPISODE < time.time():  ## when to stop
-                done = True
+            done = True
+
+        if self.get_closest_waypt_idx(self.vehicle.get_transform().location) == len(self.waypoints) - 1:
+            done = True
+            reward = (self.episode_start + SECONDS_PER_EPISODE - time.time()) * 5 * center_width / 2
 
         # observation
         observation = np.append(self.image_feature, np.array([lat]))
@@ -321,6 +334,13 @@ class CarEnv(gym.Env):
         """
 
         return min(self.waypoints, key = lambda waypt : waypt.transform.location.distance(location))
+
+    def get_closest_waypt_idx(self, location):
+        """
+        location : carla.Location
+        """
+
+        return min(range(len(self.waypoints)), key = lambda i : self.waypoints[i].transform.location.distance(location))
     
     def get_obs_shape(self):
         """ return shape of the observation space """

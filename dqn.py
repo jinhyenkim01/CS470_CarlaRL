@@ -39,7 +39,7 @@ class DQNAgent:
         self.observation_shape = observation_shape
 
         # hyperparameters
-        self.discount = 0.99
+        self.discount = 0.998
         self.learning_rate = 0.001
 
         # batch size
