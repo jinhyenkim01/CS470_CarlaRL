@@ -71,8 +71,8 @@ class DQNAgent:
     def my_model(self):
 
         return tf.keras.Sequential([
-            tf.keras.layers.Dense(512, input_shape=self.observation_shape, activation = "relu"),
-            tf.keras.layers.Dense(128, activation = "relu"),
+            tf.keras.layers.Dense(24, input_shape=self.observation_shape, activation = "relu"),
+            tf.keras.layers.Dense(24, activation = "relu"),
             tf.keras.layers.Dense(self.num_actions, activation="linear")]
         )
 
@@ -161,9 +161,9 @@ class DQNTrainer:
 
         # hyperparmeter
         self.epsilon = 1.0
-        self.epsilon_decay = 0.99
+        self.epsilon_decay = 0.998
         self.epsilon_min = 0.01
-        self.num_episodes = 500
+        self.num_episodes = 2000
         self.update_target_every = 1
 
         # render option

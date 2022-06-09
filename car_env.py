@@ -33,7 +33,7 @@ import carla
 STATE_SHAPE = (1,)
 IM_WIDTH = 640
 IM_HEIGHT = 480
-SECONDS_PER_EPISODE = 1000
+SECONDS_PER_EPISODE = 30
 MAX_LAT = 1.2
 SHOW_PREVIEW  = False    ## for debugging purpose
 MIN_REWARD = -2
@@ -72,7 +72,7 @@ class CarEnv(gym.Env):
         self.frenet = FrenetFrame()
 
         self.action_space = gym.spaces.Discrete(5)
-        self.observation_space = gym.spaces.Box(low = - MAX_LAT * 2, high = MAX_LAT * 2, shape=(2049,), dtype=np.float32)
+        self.observation_space = gym.spaces.Box(low = - MAX_LAT * 2, high = MAX_LAT * 2, shape=(1,), dtype=np.float32)
 
         # car location
         self.vehicle_location = None
@@ -95,22 +95,22 @@ class CarEnv(gym.Env):
 
         # generate global path
         spawn_points = self.map.get_spawn_points()
-        # choice = random.randint(0, 3)
-        # if choice == 0:
-        #     start = self.map.get_waypoint(carla.Location(19, y=-5)).transform.location
-        #     end = self.map.get_waypoint(carla.Location(19, y=5)).transform.location
-        # elif choice == 1:
-        #     start = carla.Location(spawn_points[100].location)
-        #     end = carla.Location(spawn_points[200].location)
-        # elif choice == 2:
-        #     start = self.map.get_waypoint(carla.Location(6, y=-120)).transform.location
-        #     end = carla.Location(spawn_points[200].location)
-        # elif choice == 3:
-        #     start = self.map.get_waypoint(carla.Location(27, y=-10)).transform.location
-        #     end = carla.Location(spawn_points[200].location)
+        choice = random.randint(0, 3)
+        if choice == 0:
+            start = self.map.get_waypoint(carla.Location(19, y=-5)).transform.location
+            end = self.map.get_waypoint(carla.Location(19, y=5)).transform.location
+        elif choice == 1:
+            start = carla.Location(spawn_points[100].location)
+            end = carla.Location(spawn_points[200].location)
+        elif choice == 2:
+            start = self.map.get_waypoint(carla.Location(6, y=-120)).transform.location
+            end = carla.Location(spawn_points[200].location)
+        elif choice == 3:
+            start = self.map.get_waypoint(carla.Location(27, y=-10)).transform.location
+            end = carla.Location(spawn_points[200].location)
 
-        start = carla.Location(spawn_points[100].location)
-        end = carla.Location(spawn_points[200].location)
+        # start = carla.Location(spawn_points[100].location)
+        # end = carla.Location(spawn_points[200].location)
 
         self.waypoints = self.grp.trace_route(start, end)
         if len(self.waypoints) < 2:
@@ -157,17 +157,17 @@ class CarEnv(gym.Env):
         self.actor_list.append(self.vehicle)
 
         # add rgb camera
-        self.rgb_cam = self.blueprint_library.find('sensor.camera.rgb')
-        self.rgb_cam.set_attribute("image_size_x", f"{self.im_width}")
-        self.rgb_cam.set_attribute("image_size_y", f"{self.im_height}")
-        self.rgb_cam.set_attribute("fov", f"110")  ## fov, field of view
+        # self.rgb_cam = self.blueprint_library.find('sensor.camera.rgb')
+        # self.rgb_cam.set_attribute("image_size_x", f"{self.im_width}")
+        # self.rgb_cam.set_attribute("image_size_y", f"{self.im_height}")
+        # self.rgb_cam.set_attribute("fov", f"110")  ## fov, field of view
 
         transform = carla.Transform(carla.Location(x=2.5, z=0.7))
-        self.sensor = self.world.spawn_actor(self.rgb_cam, transform, attach_to=self.vehicle)
-        self.actor_list.append(self.sensor)
-        self.sensor.listen(lambda data: self.process_img(data))
-        self.vehicle.apply_control(carla.VehicleControl(throttle=0.0, brake=0.0)) # initially passing some commands seems to help with time. Not sure why.
-        time.sleep(4)  # sleep to get things started and to not detect a collision when the car spawns/falls from sky.
+        # self.sensor = self.world.spawn_actor(self.rgb_cam, transform, attach_to=self.vehicle)
+        # self.actor_list.append(self.sensor)
+        # self.sensor.listen(lambda data: self.process_img(data))
+        # self.vehicle.apply_control(carla.VehicleControl(throttle=0.0, brake=0.0)) # initially passing some commands seems to help with time. Not sure why.
+        # time.sleep(4)  # sleep to get things started and to not detect a collision when the car spawns/falls from sky.
 
         # gnss
         if not self.training:
@@ -190,9 +190,9 @@ class CarEnv(gym.Env):
         self.colsensor.listen(lambda event: self.collision_data(event))
         
         # reset image input and check sensor is working
-        self.image_feature = None
-        while self.image_feature is None or self.vehicle_location is None:  
-            time.sleep(0.01)
+        # self.image_feature = None
+        # while self.image_feature is None or self.vehicle_location is None:  
+        #     time.sleep(0.01)
 
         self.episode_start = time.time()
 
@@ -203,7 +203,8 @@ class CarEnv(gym.Env):
         long, lat = self.frenet.get_distance(self.vehicle_location)
 
         # observation
-        observation = np.append(self.image_feature, np.array([lat]))
+        # observation = np.append(self.image_feature, np.array([lat]))
+        observation = np.array([lat])
 
         return observation
 
@@ -308,8 +309,8 @@ class CarEnv(gym.Env):
             reward = (self.episode_start + SECONDS_PER_EPISODE - time.time()) * 5 * center_width / 2
 
         # observation
-        observation = np.append(self.image_feature, np.array([lat]))
-
+        # observation = np.append(self.image_feature, np.array([lat]))
+        observation = np.array([lat])
         return observation, reward, done, dict()
 
     def collision_data(self, event):
