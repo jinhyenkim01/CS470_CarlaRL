@@ -33,7 +33,7 @@ import carla
 STATE_SHAPE = (1,)
 IM_WIDTH = 640
 IM_HEIGHT = 480
-SECONDS_PER_EPISODE = 15
+SECONDS_PER_EPISODE = 1000
 MAX_LAT = 1.2
 SHOW_PREVIEW  = False    ## for debugging purpose
 MIN_REWARD = -2
@@ -74,7 +74,11 @@ class CarEnv(gym.Env):
         self.action_space = gym.spaces.Discrete(5)
         self.observation_space = gym.spaces.Box(low = - MAX_LAT * 2, high = MAX_LAT * 2, shape=(2049,), dtype=np.float32)
 
+        # car location
+        self.vehicle_location = None
+
         # image 
+        self.image_feature = None
         self.image_shape = (self.im_height, self.im_width, 3)
         self.image_process_model = Sequential([Xception(weights="imagenet", include_top=False, input_shape=self.image_shape),
                                                GlobalAveragePooling2D()])
@@ -82,30 +86,33 @@ class CarEnv(gym.Env):
 
         self.collision_hist = []    
         self.actor_list = []
+
+        # training
+        self.training = True
         
         
     def generate_global_path(self):
 
         # generate global path
         spawn_points = self.map.get_spawn_points()
-        choice = random.randint(0, 3)
-        if choice == 0:
-            start = self.map.get_waypoint(carla.Location(19, y=-5)).transform.location
-            end = self.map.get_waypoint(carla.Location(19, y=5)).transform.location
-        elif choice == 1:
-            start = carla.Location(spawn_points[100].location)
-            end = carla.Location(spawn_points[200].location)
-        elif choice == 2:
-            start = self.map.get_waypoint(carla.Location(6, y=-120)).transform.location
-            end = carla.Location(spawn_points[200].location)
-        elif choice == 3:
-            start = self.map.get_waypoint(carla.Location(27, y=-10)).transform.location
-            end = carla.Location(spawn_points[200].location)
+        # choice = random.randint(0, 3)
+        # if choice == 0:
+        #     start = self.map.get_waypoint(carla.Location(19, y=-5)).transform.location
+        #     end = self.map.get_waypoint(carla.Location(19, y=5)).transform.location
+        # elif choice == 1:
+        #     start = carla.Location(spawn_points[100].location)
+        #     end = carla.Location(spawn_points[200].location)
+        # elif choice == 2:
+        #     start = self.map.get_waypoint(carla.Location(6, y=-120)).transform.location
+        #     end = carla.Location(spawn_points[200].location)
+        # elif choice == 3:
+        #     start = self.map.get_waypoint(carla.Location(27, y=-10)).transform.location
+        #     end = carla.Location(spawn_points[200].location)
 
-        # start = self.map.get_waypoint(carla.Location(19, y=-5)).transform.location
-        # end = self.map.get_waypoint(carla.Location(19, y=5)).transform.location
+        start = carla.Location(spawn_points[100].location)
+        end = carla.Location(spawn_points[200].location)
 
-        self.waypoints = self.grp.trace_route(start, end)[:13]
+        self.waypoints = self.grp.trace_route(start, end)
         if len(self.waypoints) < 2:
             raise ValueError("number of generated waypoints are less than 2")
 
@@ -163,23 +170,28 @@ class CarEnv(gym.Env):
         time.sleep(4)  # sleep to get things started and to not detect a collision when the car spawns/falls from sky.
 
         # gnss
-        gnss_bp = self.world.get_blueprint_library().find('sensor.other.gnss')
-        gnss_location = carla.Location(0,0,0)
-        gnss_rotation = carla.Rotation(0,0,0)
-        gnss_transform = carla.Transform(gnss_location,gnss_rotation)
+        if not self.training:
+            gnss_bp = self.world.get_blueprint_library().find('sensor.other.gnss')
+            gnss_location = carla.Location(1.5, 0, 0)
+            gnss_rotation = carla.Rotation(0,0,0)
+            gnss_transform = carla.Transform(gnss_location,gnss_rotation)
 
-        gnss_bp.set_attribute("sensor_tick",str(3.0))
-        self.gnss = self.world.spawn_actor(gnss_bp,gnss_transform,attach_to=self.vehicle, attachment_type=carla.AttachmentType.Rigid)
-        self.actor_list.append(self.gnss)
-        self.gnss.listen(lambda gnss: self.process_gnss(gnss))
+            gnss_bp.set_attribute("sensor_tick",str(0.1))
+            self.gnss = self.world.spawn_actor(gnss_bp,gnss_transform,attach_to=self.vehicle, attachment_type=carla.AttachmentType.Rigid)
+            self.actor_list.append(self.gnss)
+            self.gnss.listen(lambda gnss: self.process_gnss(gnss))
+        else:
+            self.vehicle_location = self.vehicle.get_transform().location
 
         # add collision sensor
         colsensor = self.world.get_blueprint_library().find('sensor.other.collision')
         self.colsensor = self.world.spawn_actor(colsensor, transform, attach_to=self.vehicle)
         self.actor_list.append(self.colsensor)
         self.colsensor.listen(lambda event: self.collision_data(event))
-
-        while self.image_feature is None:  ## return the observation
+        
+        # reset image input and check sensor is working
+        self.image_feature = None
+        while self.image_feature is None or self.vehicle_location is None:  
             time.sleep(0.01)
 
         self.episode_start = time.time()
@@ -188,29 +200,12 @@ class CarEnv(gym.Env):
 
 
         # get frenet coordinate
-        long, lat = self.frenet.get_distance(self.vehicle.get_transform().location)
+        long, lat = self.frenet.get_distance(self.vehicle_location)
 
         # observation
         observation = np.append(self.image_feature, np.array([lat]))
 
         return observation
-
-    def collision_data(self, event):
-        self.collision_hist.append(event)
-
-    def process_img(self, image):
-        i = np.array(image.raw_data)
-
-        i2 = i.reshape((self.im_height, self.im_width, 4))
-        i3 = i2[:, :, :3]
-
-        self.front_camera = i3  ## remember to scale this down between 0 and 1 for CNN input purpose
-        preprocessed = preprocess_input(self.front_camera.astype(np.float32)).reshape(-1, *self.image_shape)
-        self.image_feature = self.image_process_model(preprocessed)
-
-    def process_gnss(self, gnss):
-        geo = geodetic_to_enu(gnss.latitude, gnss.longitude, gnss.altitude)
-        loc = self.vehicle.get_transform().location
 
     def step(self, action):
         '''
@@ -229,9 +224,6 @@ class CarEnv(gym.Env):
         elif action == 4:
             self.vehicle.apply_control(carla.VehicleControl(throttle=0.15, steer=0.7*self.STEER_AMT))
 
-        # front wheel point
-        front_wheel_pt = self.vehicle.get_transform().transform(carla.Location(1.5, 0, 0))
-        front_wheel_loc = carla.Location(front_wheel_pt.x, front_wheel_pt.y, front_wheel_pt.z)
         # self.world.debug.draw_string(front_wheel_loc, 'O', draw_shadow=False,
         #                                 color=carla.Color(r=255, g=0, b=0), life_time=3,
         #                                 persistent_lines=True)
@@ -239,13 +231,16 @@ class CarEnv(gym.Env):
         v = self.vehicle.get_velocity()
         kmh = int(3.6 * math.sqrt(v.x**2 + v.y**2 + v.z**2))
 
-        long, lat = self.frenet.get_distance(front_wheel_loc)
-        # long, lat = self.frenet.get_distance(self.vehicle.get_transform().location)
+        if self.training:
+           self.vehicle_location = self.vehicle.get_transform().location 
+
+        long, lat = self.frenet.get_distance(self.vehicle_location)
+        # long, lat = self.frenet.get_distance(self.vehicle_location)
         # print("car's longitudinal distance from start: ", long)
         # print("distance between car and path", lat)
-        # print("loc: ", self.vehicle.get_transform().location)
+        # print("loc: ", self.vehicle_location)
 
-        center_waypt = self.get_closest_waypt(front_wheel_loc)
+        center_waypt = self.get_closest_waypt(self.vehicle_location)
         right_waypt = center_waypt.get_right_lane()
         left_waypt = center_waypt.get_left_lane()
 
@@ -308,7 +303,7 @@ class CarEnv(gym.Env):
         if self.episode_start + SECONDS_PER_EPISODE < time.time():  ## when to stop
             done = True
 
-        if self.get_closest_waypt_idx(self.vehicle.get_transform().location) == len(self.waypoints) - 1:
+        if self.get_closest_waypt_idx(self.vehicle_location) == len(self.waypoints) - 1:
             done = True
             reward = (self.episode_start + SECONDS_PER_EPISODE - time.time()) * 5 * center_width / 2
 
@@ -317,16 +312,33 @@ class CarEnv(gym.Env):
 
         return observation, reward, done, dict()
 
-    def get_angle_error(self):
-        """ calculate absolute value of angle between path direction and vehcile heading direction. \n
-        """
-        vehicle_transform = self.vehicle.get_transform()
-        vehicle_yaw = math.radians(vehicle_transform.rotation.yaw)
-        path_yaw = self.frenet.get_path_direction(vehicle_transform.location)
+    def collision_data(self, event):
+        self.collision_hist.append(event)
 
-        diff = (vehicle_yaw - path_yaw + np.pi) % (2 * np.pi) - np.pi
+    def process_img(self, image):
+        i = np.array(image.raw_data)
 
-        return np.abs(diff)
+        i2 = i.reshape((self.im_height, self.im_width, 4))
+        i3 = i2[:, :, :3]
+
+        self.front_camera = i3  ## remember to scale this down between 0 and 1 for CNN input purpose
+        preprocessed = preprocess_input(self.front_camera.astype(np.float32)).reshape(-1, *self.image_shape)
+        self.image_feature = self.image_process_model(preprocessed)
+
+    def process_gnss(self, gnss):
+        x, y, z = geodetic_to_enu(gnss.latitude, gnss.longitude, gnss.altitude)
+        self.vehicle_location = carla.Location(x, -y, z)
+
+    # def get_angle_error(self):
+    #     """ calculate absolute value of angle between path direction and vehcile heading direction. \n
+    #     """
+    #     vehicle_transform = self.vehicle.get_transform()
+    #     vehicle_yaw = math.radians(vehicle_transform.rotation.yaw)
+    #     path_yaw = self.frenet.get_path_direction(vehicle_transform.location)
+
+    #     diff = (vehicle_yaw - path_yaw + np.pi) % (2 * np.pi) - np.pi
+
+    #     return np.abs(diff)
 
     def get_closest_waypt(self, location):
         """
