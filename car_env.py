@@ -143,12 +143,12 @@ class CarEnv(gym.Env):
         if obs_bias > 6 and obs_bias < 9:
             if not left is None and left.lane_type == carla.LaneType.Driving:
                 obstacle_waypoint = left
-            else:
+            elif not right is None and right.lane_type == carla.LaneType.Driving:
                 obstacle_waypoint = right
         else:
             if not right is None and right.lane_type == carla.LaneType.Driving:
                 obstacle_waypoint = right
-            else:
+            elif not left is None and left.lane_type == carla.LaneType.Driving:
                 obstacle_waypoint = left
 
         self.obstacle_point = copy_tranfrom(obstacle_waypoint.transform)
