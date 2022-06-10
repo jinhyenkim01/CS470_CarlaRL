@@ -33,7 +33,7 @@ import carla
 STATE_SHAPE = (1,)
 IM_WIDTH = 640
 IM_HEIGHT = 480
-SECONDS_PER_EPISODE = 30
+SECONDS_PER_EPISODE = 60
 MAX_LAT = 1.2
 SHOW_PREVIEW  = False    ## for debugging purpose
 MIN_REWARD = -2
@@ -94,25 +94,27 @@ class CarEnv(gym.Env):
     def generate_global_path(self):
 
         # generate global path
-        spawn_points = self.map.get_spawn_points()
-        choice = random.randint(0, 3)
-        if choice == 0:
-            start = self.map.get_waypoint(carla.Location(19, y=-5)).transform.location
-            end = self.map.get_waypoint(carla.Location(19, y=5)).transform.location
-        elif choice == 1:
-            start = carla.Location(spawn_points[100].location)
-            end = carla.Location(spawn_points[200].location)
-        elif choice == 2:
-            start = self.map.get_waypoint(carla.Location(6, y=-120)).transform.location
-            end = carla.Location(spawn_points[200].location)
-        elif choice == 3:
-            start = self.map.get_waypoint(carla.Location(27, y=-10)).transform.location
-            end = carla.Location(spawn_points[200].location)
+        route_idx = random.randint(0, 3)
+        
 
-        # start = carla.Location(spawn_points[100].location)
-        # end = carla.Location(spawn_points[200].location)
+        if route_idx == 0:
+            # 1, LT
+            start = self.map.get_waypoint(carla.Location(5, y=-120)).transform.location
+            end = self.map.get_waypoint(carla.Location(-30, -143)).transform.location
+        elif route_idx == 1:
+            # 1, S
+            start = self.map.get_waypoint(carla.Location(5, -80)).transform.location
+            end = self.map.get_waypoint(carla.Location(5, -130)).transform.location
+        elif route_idx == 2:
+            # 2, S
+            start = self.map.get_waypoint(carla.Location(10, -80)).transform.location
+            end = self.map.get_waypoint(carla.Location(10, -130)).transform.location
+        elif route_idx == 3:
+            # 2, RT
+            start = self.map.get_waypoint(carla.Location(-20, -130)).transform.location
+            end = self.map.get_waypoint(carla.Location(-5, -100)).transform.location
 
-        self.waypoints = self.grp.trace_route(start, end)
+        self.waypoints = self.grp.trace_route(start, end)[:20]
         if len(self.waypoints) < 2:
             raise ValueError("number of generated waypoints are less than 2")
 
@@ -125,6 +127,36 @@ class CarEnv(gym.Env):
         # set distance calculator
         self.frenet.set_waypoints(self.waypoints)
 
+    def spawn_obstacle(self):
+
+        obs_idx = random.randint(7, 14)
+        obs_bias = random.randint(1, 10)
+        obstacle_waypoint = self.waypoints[obs_idx]
+
+        left = obstacle_waypoint.get_left_lane()
+        right = obstacle_waypoint.get_right_lane()
+
+        BOTH = carla.LaneChange.Both
+        RIGHT = carla.LaneChange.Right
+        LEFT = carla.LaneChange.Left
+
+        if obs_bias > 6 and obs_bias < 9:
+            if not left is None and left.lane_type == carla.LaneType.Driving:
+                obstacle_waypoint = left
+            else:
+                obstacle_waypoint = right
+        else:
+            if not right is None and right.lane_type == carla.LaneType.Driving:
+                obstacle_waypoint = right
+            else:
+                obstacle_waypoint = left
+
+        self.obstacle_point = copy_tranfrom(obstacle_waypoint.transform)
+        self.obstacle_point.location.z += 2
+
+        self.obstacle = self.world.spawn_actor(self.model_3, self.obstacle_point)  ## changed for adding waypoints
+        self.actor_list.append(self.obstacle)
+        
 
     def reset(self):
         # remove previous actors
@@ -138,17 +170,7 @@ class CarEnv(gym.Env):
         self.generate_global_path()
 
         # spawn obstacle
-        # self.obstacle_point = copy_tranfrom(self.waypoints[0].transform)
-        # self.obstacle_point.location.x -= 20
-        # self.obstacle_point.location.z += 2
-        # self.obstacle = self.world.spawn_actor(self.model_3, self.obstacle_point)  ## changed for adding waypoints
-        # self.actor_list.append(self.obstacle)
-
-        # self.obstacle_point = copy_tranfrom(self.waypoints[0].transform)
-        # self.obstacle_point.location.x -= 30
-        # self.obstacle_point.location.z += 2
-        # self.obstacle = self.world.spawn_actor(self.model_3, self.obstacle_point)  ## changed for adding waypoints
-        # self.actor_list.append(self.obstacle)
+        self.spawn_obstacle()
 
         # spawn the vehcle
         self.spawn_point = self.waypoints[0].transform
@@ -157,17 +179,17 @@ class CarEnv(gym.Env):
         self.actor_list.append(self.vehicle)
 
         # add rgb camera
-        # self.rgb_cam = self.blueprint_library.find('sensor.camera.rgb')
-        # self.rgb_cam.set_attribute("image_size_x", f"{self.im_width}")
-        # self.rgb_cam.set_attribute("image_size_y", f"{self.im_height}")
-        # self.rgb_cam.set_attribute("fov", f"110")  ## fov, field of view
+        self.rgb_cam = self.blueprint_library.find('sensor.camera.rgb')
+        self.rgb_cam.set_attribute("image_size_x", f"{self.im_width}")
+        self.rgb_cam.set_attribute("image_size_y", f"{self.im_height}")
+        self.rgb_cam.set_attribute("fov", f"110")  ## fov, field of view
 
         transform = carla.Transform(carla.Location(x=2.5, z=0.7))
-        # self.sensor = self.world.spawn_actor(self.rgb_cam, transform, attach_to=self.vehicle)
-        # self.actor_list.append(self.sensor)
-        # self.sensor.listen(lambda data: self.process_img(data))
-        # self.vehicle.apply_control(carla.VehicleControl(throttle=0.0, brake=0.0)) # initially passing some commands seems to help with time. Not sure why.
-        # time.sleep(4)  # sleep to get things started and to not detect a collision when the car spawns/falls from sky.
+        self.sensor = self.world.spawn_actor(self.rgb_cam, transform, attach_to=self.vehicle)
+        self.actor_list.append(self.sensor)
+        self.sensor.listen(lambda data: self.process_img(data))
+        self.vehicle.apply_control(carla.VehicleControl(throttle=0.0, brake=0.0)) # initially passing some commands seems to help with time. Not sure why.
+        time.sleep(1)  # sleep to get things started and to not detect a collision when the car spawns/falls from sky.
 
         # gnss
         if not self.training:
@@ -190,9 +212,9 @@ class CarEnv(gym.Env):
         self.colsensor.listen(lambda event: self.collision_data(event))
         
         # reset image input and check sensor is working
-        # self.image_feature = None
-        # while self.image_feature is None or self.vehicle_location is None:  
-        #     time.sleep(0.01)
+        self.image_feature = None
+        while self.image_feature is None or self.vehicle_location is None:  
+            time.sleep(0.01)
 
         self.episode_start = time.time()
 
@@ -203,8 +225,7 @@ class CarEnv(gym.Env):
         long, lat = self.frenet.get_distance(self.vehicle_location)
 
         # observation
-        # observation = np.append(self.image_feature, np.array([lat]))
-        observation = np.array([lat])
+        observation = np.append(self.image_feature, np.array([lat]))
 
         return observation
 
@@ -213,7 +234,6 @@ class CarEnv(gym.Env):
         For now let's just pass steer left, straight, right
         0, 1, 2
         '''
-        
         if action == 0:
             self.vehicle.apply_control(carla.VehicleControl(throttle=0.15, steer=-0.7*self.STEER_AMT))
         elif action == 1:
@@ -273,21 +293,13 @@ class CarEnv(gym.Env):
 
             # print("center: ", center_width)
 
-            # if lat > 0 and not right_waypt is None:
-            #     right_width = right_waypt.lane_width
-            #     turn_right = (center_waypt.lane_change == carla.LaneChange.Right) \
-            #              or (center_waypt.lane_change == carla.LaneChange.Both)
+            if lat > 0 and not right_waypt is None and right_waypt.lane_type == carla.LaneType.Driving:
+                right_width = right_waypt.lane_width
+                reward = (center_width + right_width) / 2 - abs(lat)
 
-            #     if turn_right:
-            #         reward = (center_width + right_width) / 2 - lat
-
-            # elif lat <= 0 and not left_waypt is None:
-            #     left_width = left_waypt.lane_width
-            #     turn_left  = (center_waypt.lane_change == carla.LaneChange.Left) \
-            #              or (center_waypt.lane_change == carla.LaneChange.Both)
-
-            #     if turn_left:
-            #         reward = (center_width + left_width) / 2 + lat
+            elif lat <= 0 and not left_waypt is None and left_waypt.lane_type == carla.LaneType.Driving:
+                left_width = left_waypt.lane_width
+                reward = (center_width + left_width) / 2 - abs(lat)
                 
 
             if reward < 0:
@@ -309,8 +321,7 @@ class CarEnv(gym.Env):
             reward = (self.episode_start + SECONDS_PER_EPISODE - time.time()) * 5 * center_width / 2
 
         # observation
-        # observation = np.append(self.image_feature, np.array([lat]))
-        observation = np.array([lat])
+        observation = np.append(self.image_feature, np.array([lat]))
         return observation, reward, done, dict()
 
     def collision_data(self, event):

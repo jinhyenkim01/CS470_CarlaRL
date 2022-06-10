@@ -71,8 +71,8 @@ class DQNAgent:
     def my_model(self):
 
         return tf.keras.Sequential([
-            tf.keras.layers.Dense(24, input_shape=self.observation_shape, activation = "relu"),
-            tf.keras.layers.Dense(24, activation = "relu"),
+            tf.keras.layers.Dense(512, input_shape=self.observation_shape, activation = "relu"),
+            tf.keras.layers.Dense(128, activation = "relu"),
             tf.keras.layers.Dense(self.num_actions, activation="linear")]
         )
 
@@ -182,6 +182,11 @@ class DQNTrainer:
         if not os.path.isdir('models'):
             os.makedirs('models')
 
+        # model directory
+        self.model_dir = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        if not os.path.isdir(f'models/{self.model_dir}'):
+            os.makedirs(f'models/{self.model_dir}')
+            
     def train_mode_th(self):
         X = np.random.uniform(size=(1, ) + self.observation_shape).astype(np.float32)
         y = np.random.uniform(size=(1, self.action_size)).astype(np.float32)
@@ -255,7 +260,7 @@ class DQNTrainer:
 
                 # save model
                 if min_reward >= SAVE_MIN_REWARD:
-                    self.agent.model.save_weights(f'models/{MODEL_NAME}__{max_reward:_>7.2f}max_{average_reward:_>7.2f}avg_{min_reward:_>7.2f}min__{int(time.time())}.model')
+                    self.agent.model.save_weights(f'models/{self.model_dir}/{max_reward:_>7.2f}max_{average_reward:_>7.2f}avg_{min_reward:_>7.2f}min__{int(time.time())}.model')
 
             if episode % self.update_target_every == 0:
                 self.agent.update_target_model()
@@ -263,7 +268,7 @@ class DQNTrainer:
 
         self.terminate = True
         trainer_thread.join()
-        self.agent.model.save_weights(f'models/{MODEL_NAME}__{max_reward:_>7.2f}max_{average_reward:_>7.2f}avg_{min_reward:_>7.2f}min__{int(time.time())}.model')
+        self.agent.model.save_weights(f'models/{self.model_dir}/{max_reward:_>7.2f}max_{average_reward:_>7.2f}avg_{min_reward:_>7.2f}min__{int(time.time())}.model')
 
     def decay_epilon(self):
         # Decay epsilon
