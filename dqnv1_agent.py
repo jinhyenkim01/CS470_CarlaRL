@@ -11,7 +11,7 @@ from dqn import DQNAgent
 
 
 
-MODEL_PATH = '/home/jongk/dqn_carla/models/Xception__2080.62max_1345.42avg__320.74min__1654588697.model'
+MODEL_PATH = '/home/rl/carla_rl/models/20220610-191804/2845.61max_1573.79avg__436.33min__1654908298.model'
 
 if __name__ == '__main__':
 
@@ -26,7 +26,7 @@ if __name__ == '__main__':
     env = CarEnv()
 
     # Load the model
-    agent = DQNAgent(env.get_obs_shape(), env.get_num_actions())
+    agent = DQNAgent(env.get_num_actions())
     model = agent.create_model()
     model.load_weights(MODEL_PATH)
 
@@ -35,7 +35,7 @@ if __name__ == '__main__':
 
     # Initialize predictions - first prediction takes longer as of initialization that has to be done
     # It's better to do a first prediction then before we start iterating over episode steps
-    model.predict(np.ones((1, ) + env.get_obs_shape()))
+    # model.predict(np.ones((1, ) + env.get_obs_shape()))
 
     # Loop over episodes
     while True:
@@ -58,7 +58,7 @@ if __name__ == '__main__':
             # cv2.waitKey(1)
 
             # Predict an action based on current observation space
-            qs = model.predict(np.array(current_state).reshape(-1, *current_state.shape))[0]
+            qs = model.get_qs(current_state)
             action = np.argmax(qs)
 
             # Step environment (additional flag informs environment to not break an episode by time limit)

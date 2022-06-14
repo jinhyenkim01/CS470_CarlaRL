@@ -36,7 +36,11 @@ IM_HEIGHT = 480
 SECONDS_PER_EPISODE = 60
 MAX_LAT = 1.2
 SHOW_PREVIEW  = False    ## for debugging purpose
-MIN_REWARD = -2
+
+MIN_REWARD = -0.2
+
+LEFT_BIAS = 1.75
+RIGHT_BIAS = 5.25
 
 def copy_tranfrom(transform):
     loc = carla.Location()
@@ -51,6 +55,13 @@ def copy_tranfrom(transform):
     rot.yaw = transform.rotation.yaw
 
     return carla.Transform(loc, rot)
+
+def scale_data(a, min, max, dtype=np.float32):
+    """ Scales an array of values from specified min, max range to -1 to 1
+        Optionally specify the data type of the output (default is uint8)
+    """
+    return ((((a - min) / float(max - min)) - 0.5)*2).astype(dtype)
+
 
 class CarEnv(gym.Env):
     SHOW_CAM = SHOW_PREVIEW
@@ -70,19 +81,16 @@ class CarEnv(gym.Env):
         self.model_3 = self.blueprint_library.filter("model3")[0]  ## grab tesla model3 from 
         self.grp = GlobalRoutePlanner(self.map, self.WAYPT_RESOLUTION)
         self.frenet = FrenetFrame()
+        self.spawn_points = self.map.get_spawn_points()
 
         self.action_space = gym.spaces.Discrete(5)
-        self.observation_space = gym.spaces.Box(low = - MAX_LAT * 2, high = MAX_LAT * 2, shape=(1,), dtype=np.float32)
 
         # car location
         self.vehicle_location = None
 
         # image 
-        self.image_feature = None
-        self.image_shape = (self.im_height, self.im_width, 3)
-        self.image_process_model = Sequential([Xception(weights="imagenet", include_top=False, input_shape=self.image_shape),
-                                               GlobalAveragePooling2D()])
-        self.image_process_model.trainable = False
+        self.lidar_image = None
+        self.image_shape = (300, 300)
 
         self.collision_hist = []    
         self.actor_list = []
@@ -94,25 +102,20 @@ class CarEnv(gym.Env):
     def generate_global_path(self):
 
         # generate global path
-        route_idx = random.randint(0, 3)
-        
+        route_idx = random.randint(0, 2)
 
         if route_idx == 0:
             # 1, LT
-            start = self.map.get_waypoint(carla.Location(5, y=-120)).transform.location
+            start = self.map.get_waypoint(carla.Location(5, -120)).transform.location
             end = self.map.get_waypoint(carla.Location(-30, -143)).transform.location
         elif route_idx == 1:
             # 1, S
             start = self.map.get_waypoint(carla.Location(5, -80)).transform.location
             end = self.map.get_waypoint(carla.Location(5, -130)).transform.location
         elif route_idx == 2:
-            # 2, S
-            start = self.map.get_waypoint(carla.Location(10, -80)).transform.location
-            end = self.map.get_waypoint(carla.Location(10, -130)).transform.location
-        elif route_idx == 3:
             # 2, RT
-            start = self.map.get_waypoint(carla.Location(-20, -130)).transform.location
-            end = self.map.get_waypoint(carla.Location(-5, -100)).transform.location
+            start = self.map.get_waypoint(carla.Location(30, -6)).transform.location
+            end = self.spawn_points[200].location
 
         self.waypoints = self.grp.trace_route(start, end)[:20]
         if len(self.waypoints) < 2:
@@ -122,39 +125,20 @@ class CarEnv(gym.Env):
         if self.WAYPT_VISUALIZE:
             for i, waypoint in enumerate(self.waypoints):
                 self.world.debug.draw_string(waypoint.transform.location, 'O', draw_shadow=False,
-                                        color=carla.Color(r=0, g=255, b=0) if i != 14 else carla.Color(r=255, g=0, b=0), life_time=1000,
+                                        color=carla.Color(r=0, g=255, b=0) if i != 14 else carla.Color(r=255, g=0, b=0), life_time=10,
                                         persistent_lines=True)
         # set distance calculator
         self.frenet.set_waypoints(self.waypoints)
 
     def spawn_obstacle(self):
 
-        obs_idx = random.randint(7, 14)
-        obs_bias = random.randint(1, 10)
+        obs_idx = random.randint(6, 12)
         obstacle_waypoint = self.waypoints[obs_idx]
-
-        left = obstacle_waypoint.get_left_lane()
-        right = obstacle_waypoint.get_right_lane()
-
-        BOTH = carla.LaneChange.Both
-        RIGHT = carla.LaneChange.Right
-        LEFT = carla.LaneChange.Left
-
-        if obs_bias > 6 and obs_bias < 9:
-            if not left is None and left.lane_type == carla.LaneType.Driving:
-                obstacle_waypoint = left
-            elif not right is None and right.lane_type == carla.LaneType.Driving:
-                obstacle_waypoint = right
-        else:
-            if not right is None and right.lane_type == carla.LaneType.Driving:
-                obstacle_waypoint = right
-            elif not left is None and left.lane_type == carla.LaneType.Driving:
-                obstacle_waypoint = left
 
         self.obstacle_point = copy_tranfrom(obstacle_waypoint.transform)
         self.obstacle_point.location.z += 2
 
-        self.obstacle = self.world.spawn_actor(self.model_3, self.obstacle_point)  ## changed for adding waypoints
+        self.obstacle = self.world.spawn_actor(self.model_3, self.obstacle_point)
         self.actor_list.append(self.obstacle)
         
 
@@ -178,16 +162,21 @@ class CarEnv(gym.Env):
         self.vehicle = self.world.spawn_actor(self.model_3, self.spawn_point)  ## changed for adding waypoints
         self.actor_list.append(self.vehicle)
 
-        # add rgb camera
-        self.rgb_cam = self.blueprint_library.find('sensor.camera.rgb')
-        self.rgb_cam.set_attribute("image_size_x", f"{self.im_width}")
-        self.rgb_cam.set_attribute("image_size_y", f"{self.im_height}")
-        self.rgb_cam.set_attribute("fov", f"110")  ## fov, field of view
+        # add lidar
+        lidar_bp = self.world.get_blueprint_library().find('sensor.lidar.ray_cast')
+        lidar_bp.set_attribute('channels',str(32))
+        lidar_bp.set_attribute('points_per_second',str(90000))
+        lidar_bp.set_attribute('rotation_frequency',str(40))
+        lidar_bp.set_attribute('range',str(20))
+        lidar_location = carla.Location(0,0,2)
+        lidar_rotation = carla.Rotation(0,0,0)
+        lidar_transform = carla.Transform(lidar_location,lidar_rotation)
+        self.lidar_sen = self.world.spawn_actor(lidar_bp,lidar_transform,attach_to=self.vehicle)
+        self.actor_list.append(self.lidar_sen)
+        self.lidar_sen.listen(lambda point_cloud: self.process_lidar(point_cloud))
+        
 
-        transform = carla.Transform(carla.Location(x=2.5, z=0.7))
-        self.sensor = self.world.spawn_actor(self.rgb_cam, transform, attach_to=self.vehicle)
-        self.actor_list.append(self.sensor)
-        self.sensor.listen(lambda data: self.process_img(data))
+
         self.vehicle.apply_control(carla.VehicleControl(throttle=0.0, brake=0.0)) # initially passing some commands seems to help with time. Not sure why.
         time.sleep(1)  # sleep to get things started and to not detect a collision when the car spawns/falls from sky.
 
@@ -206,14 +195,15 @@ class CarEnv(gym.Env):
             self.vehicle_location = self.vehicle.get_transform().location
 
         # add collision sensor
+        colsensor_transform = carla.Transform(carla.Location(x=2.5, z=0.7))
         colsensor = self.world.get_blueprint_library().find('sensor.other.collision')
-        self.colsensor = self.world.spawn_actor(colsensor, transform, attach_to=self.vehicle)
+        self.colsensor = self.world.spawn_actor(colsensor, colsensor_transform, attach_to=self.vehicle)
         self.actor_list.append(self.colsensor)
         self.colsensor.listen(lambda event: self.collision_data(event))
         
         # reset image input and check sensor is working
-        self.image_feature = None
-        while self.image_feature is None or self.vehicle_location is None:  
+        self.lidar_image = None
+        while self.lidar_image is None or self.vehicle_location is None:  
             time.sleep(0.01)
 
         self.episode_start = time.time()
@@ -225,9 +215,57 @@ class CarEnv(gym.Env):
         long, lat = self.frenet.get_distance(self.vehicle_location)
 
         # observation
-        observation = np.append(self.image_feature, np.array([lat]))
+        observation = [self.lidar_image, np.array([lat])]
 
         return observation
+
+    def process_lidar(self, point_cloud):
+        data = np.copy(np.frombuffer(point_cloud.raw_data, dtype=np.dtype('f4')))
+        data = np.reshape(data, (int(data.shape[0] / 4), 4))
+
+        side_range=(-15, 15)
+        fwd_range=(-15,15)
+        res=0.1
+        min_height = -2.73
+        max_height = 1.27
+
+        x_lidar = data[:, 0]
+        y_lidar = data[:, 1]
+        z_lidar = data[:, 2]
+        # r_lidar = points[:, 3]  # Reflectance
+        
+
+        # INDICES FILTER - of values within the desired rectangle
+        # Note left side is positive y axis in LIDAR coordinates
+        ff = np.logical_and((x_lidar > fwd_range[0]), (x_lidar < fwd_range[1]))
+        ss = np.logical_and((y_lidar > -side_range[1]), (y_lidar < -side_range[0]))
+        indices = np.argwhere(np.logical_and(ff,ss)).flatten()
+
+        # CONVERT TO PIXEL POSITION VALUES - Based on resolution
+        x_img = (-y_lidar[indices]/res).astype(np.int32) # x axis is -y in LIDAR
+        y_img = (x_lidar[indices]/res).astype(np.int32)  # y axis is -x in LIDAR
+                                                        # will be inverted later
+
+        # SHIFT PIXELS TO HAVE MINIMUM BE (0,0)
+        # floor used to prevent issues with -ve vals rounding upwards
+        x_img -= int(np.floor(side_range[0]/res))
+        y_img -= int(np.floor(fwd_range[0]/res))
+
+        # CLIP HEIGHT VALUES - to between min and max heights
+        pixel_values = np.clip(a = z_lidar[indices],
+                            a_min=min_height,
+                            a_max=max_height)
+
+        # RESCALE THE HEIGHT VALUES - to be between the range -1 to 1
+        pixel_values  = scale_data(pixel_values, min=min_height, max=max_height)
+
+        # FILL PIXEL VALUES IN IMAGE ARRAY
+        x_max = int((side_range[1] - side_range[0])/res)
+        y_max = int((fwd_range[1] - fwd_range[0])/res)
+        im = np.zeros([y_max, x_max], dtype=np.float32)
+        im[-y_img, x_img] = pixel_values # -y because images start from top left
+
+        self.lidar_image = im.reshape(*self.image_shape, 1)
 
     def step(self, action):
         '''
@@ -287,22 +325,15 @@ class CarEnv(gym.Env):
                 done = True
                 reward = MIN_REWARD
         else:
-            # width of current road 
-            center_width = center_waypt.lane_width
-            reward = center_width / 2 - abs(lat)
 
-            # print("center: ", center_width)
+            if lat > 0 :
+                reward = (RIGHT_BIAS - abs(lat)) / RIGHT_BIAS
 
-            if lat > 0 and not right_waypt is None and right_waypt.lane_type == carla.LaneType.Driving:
-                right_width = right_waypt.lane_width
-                reward = (center_width + right_width) / 2 - abs(lat)
-
-            elif lat <= 0 and not left_waypt is None and left_waypt.lane_type == carla.LaneType.Driving:
-                left_width = left_waypt.lane_width
-                reward = (center_width + left_width) / 2 - abs(lat)
+            else:
+                reward = (LEFT_BIAS - abs(lat)) / LEFT_BIAS
                 
 
-            if reward < 0:
+            if reward < MIN_REWARD:
                 done = True
             else:
                 # if reward > 0:
@@ -311,31 +342,19 @@ class CarEnv(gym.Env):
 
                 done = False
 
-        
+        time_now = time.time()
 
-        if self.episode_start + SECONDS_PER_EPISODE < time.time():  ## when to stop
+        if self.episode_start + SECONDS_PER_EPISODE < time_now:  ## when to stop
             done = True
-
-        if self.get_closest_waypt_idx(self.vehicle_location) == len(self.waypoints) - 1:
+        elif self.get_closest_waypt_idx(self.vehicle_location) == len(self.waypoints) - 1:
             done = True
-            reward = (self.episode_start + SECONDS_PER_EPISODE - time.time()) * 5 * center_width / 2
 
         # observation
-        observation = np.append(self.image_feature, np.array([lat]))
+        observation = [self.lidar_image, np.array([lat])]
         return observation, reward, done, dict()
 
     def collision_data(self, event):
         self.collision_hist.append(event)
-
-    def process_img(self, image):
-        i = np.array(image.raw_data)
-
-        i2 = i.reshape((self.im_height, self.im_width, 4))
-        i3 = i2[:, :, :3]
-
-        self.front_camera = i3  ## remember to scale this down between 0 and 1 for CNN input purpose
-        preprocessed = preprocess_input(self.front_camera.astype(np.float32)).reshape(-1, *self.image_shape)
-        self.image_feature = self.image_process_model(preprocessed)
 
     def process_gnss(self, gnss):
         x, y, z = geodetic_to_enu(gnss.latitude, gnss.longitude, gnss.altitude)

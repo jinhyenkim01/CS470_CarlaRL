@@ -9,9 +9,9 @@ import math
 import datetime
 from collections import deque
 from keras.applications.xception import Xception
-from keras.layers import Dense, GlobalAveragePooling2D
 from tensorflow.keras.optimizers import Adam
 
+from keras import layers
 
 import tensorflow as tf
 from threading import Thread, Lock
@@ -34,9 +34,8 @@ MIN_REWARD = -2
 SAVE_MIN_REWARD = 10
 
 class DQNAgent:
-    def __init__(self, observation_shape, num_actions):
+    def __init__(self, num_actions):
         self.num_actions = num_actions
-        self.observation_shape = observation_shape
 
         # hyperparameters
         self.discount = 0.998
@@ -52,7 +51,7 @@ class DQNAgent:
         self.min_replay_buffer_size = 1000
 
         # lock
-        self.replay_buffer_lock = Lock()
+        self.replay_buffer_lock = Lock()    
         self.target_model_lock = Lock()
 
         # model for action-value function
@@ -76,18 +75,50 @@ class DQNAgent:
             tf.keras.layers.Dense(self.num_actions, activation="linear")]
         )
 
+    def lidar_model(self, input_shape):
+        model = tf.keras.Sequential([   
+            layers.Conv2D(64, (3, 3), input_shape=input_shape, padding='same', activation = "relu"),
+            layers.AveragePooling2D(pool_size=(5, 5), strides=(3, 3), padding='same'),
+            layers.Conv2D(64, (3, 3), padding='same', activation = "relu"),
+            layers.AveragePooling2D(pool_size=(5, 5), strides=(3, 3), padding='same'),
+            layers.Conv2D(64, (3, 3), padding='same', activation = "relu"),
+            layers.AveragePooling2D(pool_size=(5, 5), strides=(3, 3), padding='same'),
+            layers.Conv2D(64, (3, 3), padding='same', activation = "relu"),
+            layers.AveragePooling2D(pool_size=(5, 5), strides=(3, 3), padding='same'),
+            layers.Flatten()
+        ])
+
+        return model
+
+    def Q_net(self, lidar_shape, car_loc_shape, action_dim):
+        lidar_inputs = layers.Input(shape=lidar_shape)
+        car_loc_inputs = layers.Input(shape=car_loc_shape)
+
+        lidar_model = self.lidar_model(lidar_shape)
+        lidar_feature = lidar_model(lidar_inputs)
+
+        concatenated = layers.concatenate([lidar_feature, car_loc_inputs])
+        concatenated = layers.Dense(512, activation='relu')(concatenated)
+        concatenated = layers.Dense(128, activation='relu')(concatenated)
+        concatenated = layers.Dense(action_dim, activation='relu')(concatenated)
+
+        model = tf.keras.Model(inputs=[lidar_inputs, car_loc_inputs], outputs= concatenated)
+
+        return model
+
     def xception_model(self):
 
         base_model = Xception(weights="imagenet", include_top=False, input_shape=self.observation_shape)
 
         return tf.keras.Sequential([
             base_model,
-            GlobalAveragePooling2D(),
-            Dense(self.num_actions, activation="linear")
+            layers.GlobalAveragePooling2D(),
+            layers.Dense(self.num_actions, activation="linear")
         ])
 
     def create_model(self):
-        model = self.my_model()
+        model = self.Q_net((300, 300, 1), [1,], 5)
+        model.summary()
         model.compile(loss="mse", optimizer=Adam(learning_rate=self.learning_rate), metrics=["accuracy"])
         return model
 
@@ -109,10 +140,18 @@ class DQNAgent:
         minibatch = random.sample(self.replay_memory, self.minibatch_size)
 
         self.replay_buffer_lock.acquire()
-        current_states = np.array([transition[0] for transition in minibatch])
+
+        curr_lidar = np.array([transition[0][0] for transition in minibatch])
+        curr_car_loc = np.array([transition[0][1] for transition in minibatch])
+        current_states = [curr_lidar, curr_car_loc]
+
         actions = np.array([transition[1] for transition in minibatch])
         rewards = np.array([transition[2] for transition in minibatch])
-        new_current_states = np.array([transition[3] for transition in minibatch])
+
+        next_lidar = np.array([transition[3][0] for transition in minibatch])
+        next_car_loc = np.array([transition[3][1] for transition in minibatch])
+        new_current_states = [next_lidar, next_car_loc]
+
         done = np.array([transition[4] for transition in minibatch])
         self.replay_buffer_lock.release()
 
@@ -143,8 +182,9 @@ class DQNAgent:
 
     def get_qs(self, state):
         """ predict Q value for a state """
-        state = np.array(state)
-        return self.model.predict(state.reshape(-1, *state.shape))[0]
+        lidar = state[0].reshape(-1, *state[0].shape)
+        car = state[1].reshape(-1, *state[1].shape)
+        return self.model([lidar, car])[0]
         
 
 class DQNTrainer:
@@ -155,15 +195,14 @@ class DQNTrainer:
         """
         self.env = env
 
-        self.observation_shape = env.observation_space.shape
         self.action_size = env.action_space.n
-        self.agent = DQNAgent(self.observation_shape, self.action_size)
+        self.agent = DQNAgent(self.action_size)
 
         # hyperparmeter
         self.epsilon = 1.0
-        self.epsilon_decay = 0.998
+        self.epsilon_decay = 0.9985
         self.epsilon_min = 0.01
-        self.num_episodes = 2000
+        self.num_episodes = 3000
         self.update_target_every = 1
 
         # render option
@@ -188,9 +227,9 @@ class DQNTrainer:
             os.makedirs(f'models/{self.model_dir}')
             
     def train_mode_th(self):
-        X = np.random.uniform(size=(1, ) + self.observation_shape).astype(np.float32)
-        y = np.random.uniform(size=(1, self.action_size)).astype(np.float32)
-        self.agent.model.fit(X,y, verbose=False, batch_size=1)
+        # X = np.random.uniform(size=(1, ) + self.observation_shape).astype(np.float32)
+        # y = np.random.uniform(size=(1, self.action_size)).astype(np.float32)
+        # self.agent.model.fit(X,y, verbose=False, batch_size=1)
 
         self.training_initialized = True
 
@@ -301,9 +340,9 @@ if __name__ == '__main__':
     # Memory fraction, used mostly when trai8ning multiple agents
     # gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=MEMORY_FRACTION)
     # backend.set_session(tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)))
-    gpus = tf.config.experimental.list_physical_devices('GPU')
-    for gpu in gpus:
-        tf.config.experimental.set_memory_growth(gpu, True)
+    # gpus = tf.config.experimental.list_physical_devices('GPU')
+    # for gpu in gpus:
+    #     tf.config.experimental.set_memory_growth(gpu, True)
 
     # Create agent and environment
     env = CarEnv()
